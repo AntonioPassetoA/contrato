@@ -7,14 +7,16 @@ import { logEvent } from './logger';
 import { getTemplate } from './templates/registry';
 import type { CampoDef, TipoPessoa } from './templates/types';
 import { renderHtmlToPdf } from './pdf';
+import { enviarLinkAssinatura } from './email';
 import {
   createDocumentWithFile,
   createLinkToSignature,
   getDocument,
   type SignerInput,
+  type SecurityVerificationInput,
 } from './autentique';
 import {
-  isValidCPF, isValidCNPJ, isValidPhoneBR, isValidCEP,
+  isValidCPF, isValidCNPJ, isValidPhoneBR, isValidCEP, isValidEmail, onlyDigits,
   formatCPF, formatCNPJ, formatCEP, formatPhoneBR,
 } from './validators';
 
@@ -28,10 +30,11 @@ function nowISO() { return new Date().toISOString(); }
  * mesma caixa configurada em TEST_SIGNER_EMAIL.
  *
  * O Autentique rejeita "+tags" (format_is_invalid), mas o Gmail IGNORA pontos
- * no nome — então "a.ntoniomasterresults@gmail.com" e "an.toniomasterresults@gmail.com"
- * são endereços distintos para o Autentique (não unifica os signatários) e
- * chegam na mesma caixa. Para provedores fora do Gmail, usa o e-mail base
- * (o Autentique unifica os fixos em um único signatário de teste).
+ * no nome — então dois endereços que diferem apenas pela posição do ponto (por
+ * exemplo "u.suario@example.com" e "us.uario@example.com") são distintos para o
+ * Autentique (não unifica os signatários) e chegam na mesma caixa. Para provedores
+ * fora do Gmail, usa o e-mail base (o Autentique unifica os fixos em um único
+ * signatário de teste).
  */
 function emailDeTeste(index: number): string {
   const base = config.testSignerEmail;
@@ -45,6 +48,42 @@ function emailDeTeste(index: number): string {
     return `${semPontos.slice(0, pos)}.${semPontos.slice(pos)}@${dominio}`;
   }
   return base;
+}
+
+export interface DadosCliente {
+  nome: string;
+  email?: string;
+  telefone?: string;
+}
+
+/**
+ * Monta o signatário CLIENTE.
+ * - Sempre exige foto do documento (verificação UPLOAD) — só do cliente.
+ * - Em modo de teste: NÃO dispara nada (assina pelo link mostrado na tela),
+ *   protegendo clientes reais durante os testes.
+ * - Em produção: o Autentique dispara por WhatsApp (canal primário), com o
+ *   e-mail e o telefone do cliente cadastrados no signatário.
+ */
+export function montarSignerCliente(dados: DadosCliente, modoTeste: boolean): SignerInput {
+  const verificacoes: SecurityVerificationInput[] = [{ type: 'UPLOAD' }];
+  if (modoTeste) {
+    return {
+      name: dados.nome,
+      action: 'SIGN',
+      delivery_method: 'DELIVERY_METHOD_LINK',
+      security_verifications: verificacoes,
+    };
+  }
+  // Produção: canal primário = WhatsApp. O Autentique NÃO aceita e-mail e telefone
+  // no mesmo signatário (only_one_allowed:email, phone), então enviamos só o telefone.
+  // O e-mail do cliente continua coletado e guardado no nosso sistema (form_data).
+  return {
+    name: dados.nome,
+    phone: dados.telefone ? `+55${onlyDigits(dados.telefone)}` : undefined,
+    action: 'SIGN',
+    delivery_method: 'DELIVERY_METHOD_WHATSAPP',
+    security_verifications: verificacoes,
+  };
 }
 
 // ---------- Admin: gerar link ----------
@@ -66,7 +105,7 @@ function parseValorToCentavos(v: string | number | undefined): number | null {
   return Number.isFinite(n) ? Math.round(n * 100) : null;
 }
 
-export function criarLink(input: CriarLinkInput) {
+export function criarLink(input: CriarLinkInput, createdBy?: number) {
   const template = getTemplate(input.templateId);
   if (!template) throw new Error('Modelo não encontrado');
 
@@ -88,15 +127,15 @@ export function criarLink(input: CriarLinkInput) {
   const expiresAt = new Date(Date.now() + dias * 86400_000).toISOString();
 
   const info = db.prepare(`
-    INSERT INTO contracts (token, template_id, template_nome, cliente_label, valor_centavos, dia_vencimento, status, sandbox, expires_at, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, 'pendente', ?, ?, ?)
+    INSERT INTO contracts (token, template_id, template_nome, cliente_label, valor_centavos, dia_vencimento, status, sandbox, expires_at, created_at, created_by)
+    VALUES (?, ?, ?, ?, ?, ?, 'pendente', ?, ?, ?, ?)
   `).run(
     token, template.id, template.nome, input.clienteLabel ?? null,
-    valorCentavos, diaVencimento, config.autentiqueSandbox ? 1 : 0, expiresAt, nowISO()
+    valorCentavos, diaVencimento, config.autentiqueSandbox ? 1 : 0, expiresAt, nowISO(), createdBy ?? null
   );
 
   const id = Number(info.lastInsertRowid);
-  logEvent('link_gerado', { templateId: template.id, clienteLabel: input.clienteLabel, sandbox: config.autentiqueSandbox }, id);
+  logEvent('link_gerado', { templateId: template.id, clienteLabel: input.clienteLabel, sandbox: config.autentiqueSandbox, createdBy }, id);
 
   return {
     id,
@@ -159,6 +198,7 @@ export function validarFormulario(campos: CampoDef[], form: Record<string, strin
       case 'cnpj': if (!isValidCNPJ(raw)) erros[campo.name] = 'CNPJ inválido'; break;
       case 'phone': if (!isValidPhoneBR(raw)) erros[campo.name] = 'Telefone inválido'; break;
       case 'cep': if (!isValidCEP(raw)) erros[campo.name] = 'CEP inválido'; break;
+      case 'email': if (!isValidEmail(raw)) erros[campo.name] = 'E-mail inválido'; break;
     }
   }
   return erros;
@@ -174,6 +214,7 @@ function normalizar(campos: CampoDef[], form: Record<string, string>): Record<st
       else if (campo.type === 'cnpj') v = formatCNPJ(v);
       else if (campo.type === 'cep') v = formatCEP(v);
       else if (campo.type === 'phone') v = formatPhoneBR(v);
+      else if (campo.type === 'email') v = v.toLowerCase();
     }
     out[campo.name] = v;
   }
@@ -213,13 +254,22 @@ export async function processarEnvio(token: string, tipoPessoa: TipoPessoa, form
     writeFileSync(pdfPath, pdf);
     logEvent('pdf_gerado', { bytes: pdf.length }, c.id);
 
-    // 2) monta signatários (fixos + cliente por LINK)
+    // 2) monta signatários (fixos + cliente)
     const clienteNome = form.nome || c.cliente_label || 'Cliente';
-    // Modo de teste seguro: em sandbox, redireciona os fixos para o e-mail de teste.
+
+    // Modo de teste seguro: em sandbox, redireciona os fixos para o e-mail de teste
+    // e NÃO dispara nada ao cliente real (ele assina pelo link mostrado na tela).
     const redirecionarTeste = config.autentiqueSandbox && !!config.testSignerEmail;
     if (redirecionarTeste) {
       logEvent('signatarios_redirecionados_teste', { para: config.testSignerEmail }, c.id);
     }
+
+    const clienteSigner = montarSignerCliente(
+      { nome: clienteNome, email: form.email || undefined, telefone: form.telefone || undefined },
+      redirecionarTeste,
+    );
+
+    // Os 4 signatários fixos da agência assinam por e-mail, SEM verificação extra.
     const signers: SignerInput[] = [
       ...template.signatariosFixos.map((s, i) => ({
         name: s.name,
@@ -227,7 +277,7 @@ export async function processarEnvio(token: string, tipoPessoa: TipoPessoa, form
         action: s.action,
         delivery_method: 'DELIVERY_METHOD_EMAIL' as const,
       })),
-      { name: clienteNome, action: 'SIGN', delivery_method: 'DELIVERY_METHOD_LINK' },
+      clienteSigner,
     ];
 
     // 3) cria documento no Autentique
@@ -239,7 +289,8 @@ export async function processarEnvio(token: string, tipoPessoa: TipoPessoa, form
     });
     logEvent('documento_criado', { autentiqueId: doc.id, sandbox: doc.sandbox }, c.id);
 
-    // 4) descobre o signatário cliente (único sem e-mail) e o link de assinatura
+    // 4) descobre o signatário cliente e o link de assinatura.
+    //    O cliente é o único signatário sem e-mail (teste=LINK, produção=WhatsApp por telefone).
     const clienteSig = doc.signatures.find((s) => !s.email) ?? doc.signatures.at(-1)!;
     let shortLink = clienteSig?.link?.short_link ?? null;
     if (!shortLink && clienteSig) {
@@ -257,6 +308,15 @@ export async function processarEnvio(token: string, tipoPessoa: TipoPessoa, form
     );
     logEvent('link_assinatura_pronto', { shortLink }, c.id);
 
+    // Opção A: além do WhatsApp (Autentique), enviamos o MESMO link por e-mail.
+    // Em modo de teste NÃO enviamos nada ao cliente real.
+    if (redirecionarTeste) {
+      logEvent('email_pulado_modo_teste', { para: form.email }, c.id);
+    } else {
+      await enviarLinkAssinatura({ para: form.email, nome: clienteNome, link: shortLink, contractId: c.id })
+        .catch((err) => logEvent('email_erro', { mensagem: String(err?.message ?? err) }, c.id));
+    }
+
     return { ok: true as const, shortLink, documentId: doc.id };
   } catch (err: any) {
     db.prepare(`UPDATE contracts SET status='erro' WHERE id=?`).run(c.id);
@@ -269,10 +329,13 @@ export async function processarEnvio(token: string, tipoPessoa: TipoPessoa, form
 
 export function listarContratos(limit = 100) {
   return db.prepare(`
-    SELECT id, token, template_nome, cliente_label, valor_centavos, dia_vencimento,
-           status, tipo_pessoa, short_link, autentique_document_id, sandbox,
-           expires_at, created_at, submitted_at, signed_at
-    FROM contracts ORDER BY id DESC LIMIT ?
+    SELECT c.id, c.token, c.template_nome, c.cliente_label, c.valor_centavos, c.dia_vencimento,
+           c.status, c.tipo_pessoa, c.short_link, c.autentique_document_id, c.sandbox,
+           c.expires_at, c.created_at, c.submitted_at, c.signed_at,
+           c.created_by, u.nome AS created_by_nome
+    FROM contracts c
+    LEFT JOIN users u ON u.id = c.created_by
+    ORDER BY c.id DESC LIMIT ?
   `).all(limit);
 }
 

@@ -12,16 +12,32 @@ async function getBrowser(): Promise<Browser> {
   return browserPromise;
 }
 
+export interface PdfOptions {
+  /** Rodapé (HTML puppeteer, com <span class="pageNumber"></span> etc). Liga displayHeaderFooter. */
+  footerTemplate?: string;
+  headerTemplate?: string;
+  margin?: { top?: string; bottom?: string; left?: string; right?: string };
+}
+
 /** Converte um HTML completo em um PDF A4 (Buffer). */
-export async function renderHtmlToPdf(html: string): Promise<Buffer> {
+export async function renderHtmlToPdf(html: string, opts: PdfOptions = {}): Promise<Buffer> {
   const browser = await getBrowser();
   const page = await browser.newPage();
   try {
     await page.setContent(html, { waitUntil: 'networkidle0' });
+    const usaRodape = !!(opts.footerTemplate || opts.headerTemplate);
     const pdf = await page.pdf({
       format: 'A4',
       printBackground: true,
-      margin: { top: '20mm', bottom: '20mm', left: '18mm', right: '18mm' },
+      displayHeaderFooter: usaRodape,
+      headerTemplate: opts.headerTemplate ?? '<span></span>',
+      footerTemplate: opts.footerTemplate ?? '<span></span>',
+      margin: {
+        top: opts.margin?.top ?? '20mm',
+        bottom: opts.margin?.bottom ?? (usaRodape ? '24mm' : '20mm'),
+        left: opts.margin?.left ?? '18mm',
+        right: opts.margin?.right ?? '18mm',
+      },
     });
     return Buffer.from(pdf);
   } finally {

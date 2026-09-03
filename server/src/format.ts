@@ -28,6 +28,16 @@ export function valorPorExtenso(centavos: number): string {
   }
 }
 
+/** Inteiro por extenso, ex.: 6 -> "seis". Retorna '' se falhar/for inválido. */
+export function numeroPorExtenso(n: number): string {
+  try {
+    if (!Number.isInteger(n) || n < 0) return '';
+    return extenso(String(n), { mode: 'number' });
+  } catch {
+    return '';
+  }
+}
+
 const dataFmt = new Intl.DateTimeFormat('pt-BR', {
   day: 'numeric',
   month: 'long',

@@ -10,12 +10,25 @@ export type DeliveryMethod =
 
 export type SignerAction = 'SIGN' | 'SIGN_AS_A_WITNESS' | 'APPROVE' | 'RECOGNIZE';
 
+/** Verificações de identidade suportadas (SecurityVerificationEnum do Autentique). */
+export type SecurityVerification =
+  | 'SMS' | 'UPLOAD' | 'LIVE' | 'PF_FACIAL' | 'PF_FACIAL_MATCH'
+  | 'MANUAL' | 'BIOMETRIC_AND_TEXT_EXTRACTION' | 'LIVENESS_AND_TEXT_EXTRACTION';
+
+export interface SecurityVerificationInput {
+  type: SecurityVerification;
+  verify_phone?: string;
+  fallback_behavior?: 'DISABLE_FALLBACK';
+  max_attempts?: number;
+}
+
 export interface SignerInput {
   name?: string;
   email?: string;
   phone?: string;
   delivery_method?: DeliveryMethod;
   action: SignerAction;
+  security_verifications?: SecurityVerificationInput[];
 }
 
 export interface DocumentInput {
@@ -42,8 +55,24 @@ export interface CreatedDocument {
 
 class AutentiqueError extends Error {}
 
+/**
+ * Guarda de ambiente: em teste/desenvolvimento (config.autentiqueOffline) NENHUMA
+ * requisição de rede à Autentique é permitida. Lançamos ANTES de qualquer `fetch`,
+ * de modo que suíte de testes, build local, typecheck e geração local de PDF nunca
+ * alcancem a rede. Em produção o guard fica inativo (comportamento controlado).
+ */
+function assertOnline(operacao: string): void {
+  if (config.autentiqueOffline) {
+    throw new AutentiqueError(
+      `Autentique OFFLINE: chamada externa bloqueada neste ambiente (${operacao}). ` +
+      'Defina AUTENTIQUE_OFFLINE=0 e rode em produção para habilitar chamadas reais.',
+    );
+  }
+}
+
 /** Executa uma query/mutation GraphQL simples (sem upload de arquivo). */
 export async function gql<T = any>(query: string, variables: Record<string, unknown> = {}): Promise<T> {
+  assertOnline('gql');
   const res = await fetch(ENDPOINT, {
     method: 'POST',
     headers: {
@@ -89,6 +118,7 @@ export async function createDocumentWithFile(params: {
   fileBuffer: Buffer;
   filename: string;
 }): Promise<CreatedDocument> {
+  assertOnline('createDocumentWithFile');
   const { document, signers, fileBuffer, filename } = params;
 
   const operations = {

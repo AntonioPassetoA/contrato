@@ -6,6 +6,8 @@ import {
   dataPorExtenso,
   montarEndereco,
 } from '../format';
+import { getConfigEmpresa } from '../configEmpresa';
+import { qualificarContratada } from '../composicaoContrato';
 
 const ESTADO_CIVIL_OPCOES = [
   { value: 'solteiro(a)', label: 'Solteiro(a)' },
@@ -38,7 +40,8 @@ function camposPessoa(labelNome: string, grupo: string): CampoDef[] {
     { name: 'rg', label: 'RG', type: 'text', required: true, group: grupo, colSpan: 1 },
     { name: 'rg_orgao', label: 'Órgão expedidor', type: 'text', required: true, group: grupo, colSpan: 1, placeholder: 'Ex.: SSP/PR' },
     { name: 'cpf', label: 'CPF', type: 'cpf', required: true, group: grupo, colSpan: 1 },
-    { name: 'telefone', label: 'Telefone / WhatsApp', type: 'phone', required: true, group: grupo, colSpan: 2 },
+    { name: 'telefone', label: 'Telefone / WhatsApp', type: 'phone', required: true, group: grupo, colSpan: 1 },
+    { name: 'email', label: 'E-mail', type: 'email', required: true, group: grupo, colSpan: 1, placeholder: 'voce@email.com' },
   ];
 }
 
@@ -89,6 +92,21 @@ function render(input: RenderInput): string {
   const valorTexto = ext ? `${valorFmt} (${ext})` : valorFmt;
   const nomeSignatario = g('nome');
 
+  // CONTRATADA e testemunhas vêm SEMPRE da configuração centralizada (Empresa) —
+  // nunca de dados fixos no código. Sem dados reais embutidos aqui.
+  const cfgEmpresa = getConfigEmpresa();
+  const contratadaTexto = cfgEmpresa.contratada
+    ? qualificarContratada(cfgEmpresa.contratada)
+    : '[CONTRATADA não configurada — preencha em "Empresa".]';
+  const repsContratada = (cfgEmpresa.contratada?.representantes ?? []).filter((r) => r.nome?.trim());
+  const testemunhas = (cfgEmpresa.testemunhas ?? []).filter((t) => t.nome?.trim());
+  const repsHtml = repsContratada.length
+    ? repsContratada.map((r) => `<div class="sig-col"><div class="sig-line"></div>${escapeHtml(r.nome)}</div>`).join('')
+    : '<div class="sig-col"><div class="sig-line"></div>Representante da CONTRATADA</div>';
+  const testemunhasHtml = testemunhas.length
+    ? testemunhas.map((t, i) => `<div class="sig-col"><div class="sig-line"></div>${escapeHtml(t.nome)}<br><small>CPF: ${escapeHtml(t.cpf)}<br>(Testemunha 0${i + 1})</small></div>`).join('')
+    : '';
+
   return `<!doctype html>
 <html lang="pt-BR"><head><meta charset="utf-8"><style>
   @page { size: A4; }
@@ -113,7 +131,7 @@ function render(input: RenderInput): string {
 <p>${contratante}</p>
 
 <p class="parte-titulo">CONTRATADA:</p>
-<p><strong>PRIME RESULTS LTDA</strong>, empresa de direito privado, inscrita no CNPJ nº 44.336.151/0001-90, com sede na Rua João Francisco Ferreira, nº 259, Centro, na cidade de Bandeirantes/PR, endereço eletrônico faleconosco@masterresults.com.br, tendo como representantes <strong>VINÍCIUS RAGAZZI MORAES</strong>, brasileiro, união estável, empresário, portador do RG nº 10.318.481-9, inscrito no CPF nº 083.489.569-21, residente na Rua Benedito Bernardes de Oliveira, nº 50, Centro, na cidade de Bandeirantes/PR e <strong>ALEX VINÍCIUS GIMENES GURRÃO</strong>, brasileiro, casado, empresário, portador do RG nº 12.525.419-5 SSP/PR, inscrito no CPF nº 057.262.009-85, residente na Rua Dino Veiga, nº 601, Centro, na cidade de Bandeirantes/PR.</p>
+<p>${escapeHtml(contratadaTexto)}</p>
 
 <h2>Do Objeto do Contrato</h2>
 <p class="clausula">CLÁUSULA PRIMEIRA</p>
@@ -193,14 +211,8 @@ function render(input: RenderInput): string {
   </div>
 
   <p class="parte-titulo" style="margin-top:28px">Representantes da CONTRATADA:</p>
-  <div class="sig-row">
-    <div class="sig-col"><div class="sig-line"></div>ALEX VINÍCIUS GIMENES GURRÃO</div>
-    <div class="sig-col"><div class="sig-line"></div>VINÍCIUS RAGAZZI DE MORAES</div>
-  </div>
-  <div class="sig-row">
-    <div class="sig-col"><div class="sig-line"></div>EMANUELLE DE OLIVEIRA<br><small>CPF: 093.968.789-52<br>(Testemunha 01)</small></div>
-    <div class="sig-col"><div class="sig-line"></div>GUSTAVO ARAUJO RAGAZZI<br><small>CPF: 145.156.569-02<br>(Testemunha 02)</small></div>
-  </div>
+  <div class="sig-row">${repsHtml}</div>
+  ${testemunhasHtml ? `<div class="sig-row">${testemunhasHtml}</div>` : ''}
 </div>
 
 </body></html>`;
@@ -221,11 +233,9 @@ export const planoPrata: TemplateDef = {
     const nome = input.form.razao_social || input.form.nome || 'Cliente';
     return `Plano Prata - ${nome}`;
   },
-  signatariosFixos: [
-    { name: 'Alex Vinícius Gimenes Gurrão', email: 'alex@masterresults.com.br', action: 'SIGN' },
-    { name: 'Vinícius Ragazzi de Moraes', email: 'vinicius.pokevi@gmail.com', action: 'SIGN' },
-    { name: 'Emanuelle de Oliveira', email: 'emanuelleo703@gmail.com', action: 'SIGN_AS_A_WITNESS' },
-    { name: 'Gustavo Araujo Ragazzi', email: 'gragazzi.gr@gmail.com', action: 'SIGN_AS_A_WITNESS' },
-  ],
+  // Signatários fixos NÃO ficam mais embutidos no código (sem dados reais).
+  // A definição de signatários da CONTRATADA/testemunhas vem da configuração
+  // centralizada (Empresa) no fluxo atual da Etapa 3.
+  signatariosFixos: [],
   render,
 };

@@ -7,3 +7,14 @@ build/
 *.sqlite3
 data/
 .DS_Store
+
+# Dados sensíveis / LGPD — NUNCA versionar (planilhas, PDFs de clientes, extrações e scripts temporários)
+*.xlsx
+*.xls
+*.xlsm
+*.pdf
+_amostras/
+_samples.json
+_*.py
+_*.txt
+_*.md

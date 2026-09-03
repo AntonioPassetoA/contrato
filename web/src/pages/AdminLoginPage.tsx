@@ -8,13 +8,19 @@ import { Lock } from 'lucide-react';
 
 export default function AdminLoginPage() {
   const nav = useNavigate();
+  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [erro, setErro] = useState('');
   const [loading, setLoading] = useState(false);
   const [checando, setChecando] = useState(true);
 
   useEffect(() => {
-    api.adminMe().then(() => nav('/admin', { replace: true })).catch(() => setChecando(false));
+    api.adminMe()
+      .then(({ user }) => {
+        if (user.must_change_password) return nav('/trocar-senha', { replace: true });
+        nav(user.role === 'admin' ? '/admin' : '/vendedor', { replace: true });
+      })
+      .catch(() => setChecando(false));
   }, [nav]);
 
   async function entrar(e: React.FormEvent) {
@@ -22,10 +28,11 @@ export default function AdminLoginPage() {
     setErro('');
     setLoading(true);
     try {
-      await api.adminLogin(password);
-      nav('/admin', { replace: true });
+      const { user, mustChangePassword } = await api.adminLogin(email, password);
+      if (mustChangePassword) return nav('/trocar-senha', { replace: true });
+      nav(user.role === 'admin' ? '/admin' : '/vendedor', { replace: true });
     } catch {
-      setErro('Senha incorreta.');
+      setErro('E-mail ou senha incorretos.');
       setLoading(false);
     }
   }
@@ -50,11 +57,24 @@ export default function AdminLoginPage() {
         </div>
         <form onSubmit={entrar} className="space-y-4">
           <div>
+            <Label htmlFor="email">E-mail</Label>
+            <Input
+              id="email"
+              type="email"
+              autoFocus
+              autoComplete="username"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              invalid={!!erro}
+              placeholder="voce@empresa.com.br"
+            />
+          </div>
+          <div>
             <Label htmlFor="senha">Senha</Label>
             <Input
               id="senha"
               type="password"
-              autoFocus
+              autoComplete="current-password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               invalid={!!erro}
@@ -62,7 +82,7 @@ export default function AdminLoginPage() {
             />
             {erro && <p className="mt-1.5 text-sm text-red-600">{erro}</p>}
           </div>
-          <Button type="submit" className="w-full" disabled={loading || !password}>
+          <Button type="submit" className="w-full" disabled={loading || !email || !password}>
             {loading ? <Spinner /> : 'Entrar'}
           </Button>
         </form>
